@@ -67,6 +67,39 @@ def _format_json(data: Any) -> str:
 
 
 @mcp.tool()
+def launch_overleaf_browser(
+    share_or_project_url: Optional[str] = None,
+    port: int = 9222,
+) -> str:
+    """Launch Google Chrome with Remote Debugging (--remote-debugging-port=9222) for Free-Tier Overleaf projects.
+
+    Args:
+        share_or_project_url: Optional Overleaf project or share URL to open immediately.
+        port: Chrome Remote Debugging port (default 9222).
+    """
+    client = get_client()
+    res = client.browser_client.launch_chrome_debug_session(
+        port=port,
+        target_url=share_or_project_url,
+    )
+    return _format_json(res)
+
+
+@mcp.tool()
+async def check_overleaf_browser_session(
+    share_or_project_url: Optional[str] = None,
+) -> str:
+    """Verify that Chrome is connected and the Free-Tier Overleaf project is open in the browser.
+
+    Args:
+        share_or_project_url: Optional Overleaf project or share URL to navigate to.
+    """
+    client = get_client()
+    res = await client.browser_client.open_project(share_or_project_url)
+    return _format_json(res)
+
+
+@mcp.tool()
 def register_project(
     alias: str,
     project_id_or_url: str,

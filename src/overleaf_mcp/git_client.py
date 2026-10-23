@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .browser_client import OverleafBrowserClient, run_sync
 from .config import OverleafConfig
 
 
@@ -26,6 +28,8 @@ class OverleafGitClient:
 
     def __init__(self, config: Optional[OverleafConfig] = None) -> None:
         self.config = config or OverleafConfig()
+        self.browser_client = OverleafBrowserClient()
+        self._browser_mode_projects: set[str] = set()
 
     def _run_git(
         self,
@@ -74,16 +78,33 @@ class OverleafGitClient:
         return self.config.workspace_dir / dir_name
 
     def ensure_repo(self, project: Optional[str] = None, auto_pull: bool = True) -> Path:
-        """Ensure the project is cloned locally and optionally pull latest changes."""
+        """Ensure the project is cloned locally (via Git Bridge or Free-Tier Browser fallback)."""
         resolved = self.config.resolve_project_id(project)
         repo_path = self.get_repo_path(project)
+        sync_mode = os.getenv("OVERLEAF_SYNC_MODE", "auto").strip().lower()
+
+        if sync_mode == "browser" or resolved in self._browser_mode_projects:
+            run_sync(self.browser_client.sync_to_workspace(repo_path, project_id_or_url=resolved))
+            self._browser_mode_projects.add(resolved)
+            return repo_path
+
         remote_url = self.config.build_git_remote_url(resolved)
 
         if not (repo_path / ".git").exists():
             repo_path.parent.mkdir(parents=True, exist_ok=True)
-            self._run_git(["clone", remote_url, str(repo_path)])
+            try:
+                self._run_git(["clone", remote_url, str(repo_path)])
+            except OverleafGitError as exc:
+                if "no git access" in str(exc).lower() and sync_mode == "auto":
+                    self._browser_mode_projects.add(resolved)
+                    run_sync(
+                        self.browser_client.sync_to_workspace(
+                            repo_path, project_id_or_url=resolved
+                        )
+                    )
+                    return repo_path
+                raise
         else:
-            # Ensure remote URL stays up-to-date with current token
             self._run_git(["remote", "set-url", "origin", remote_url], cwd=repo_path)
             if auto_pull:
                 self.pull(project=project, repo_path=repo_path)
@@ -91,9 +112,21 @@ class OverleafGitClient:
         return repo_path
 
     def pull(self, project: Optional[str] = None, repo_path: Optional[Path] = None) -> str:
-        """Pull latest changes from Overleaf remote."""
+        """Pull latest changes from Overleaf remote (or sync from browser on Free Tier)."""
+        resolved = self.config.resolve_project_id(project)
         repo = repo_path or self.ensure_repo(project, auto_pull=False)
-        # Check if there are uncommitted local modifications before pulling
+        sync_mode = os.getenv("OVERLEAF_SYNC_MODE", "auto").strip().lower()
+
+        if sync_mode == "browser" or resolved in self._browser_mode_projects:
+            res = run_sync(self.browser_client.sync_to_workspace(repo, project_id_or_url=resolved))
+            return f"Synced {len(res.get('extracted_files', []))} files from Overleaf Browser session."
+
+        # Check if origin remote exists; if not, it's a local browser-synced repo
+        remotes = self._run_git(["remote"], cwd=repo, check=False).stdout.splitlines()
+        if "origin" not in remotes:
+            res = run_sync(self.browser_client.sync_to_workspace(repo, project_id_or_url=resolved))
+            return f"Synced {len(res.get('extracted_files', []))} files from Overleaf Browser session."
+
         status = self._run_git(["status", "--porcelain"], cwd=repo, check=False)
         has_dirty = bool(status.stdout.strip())
 
@@ -103,7 +136,6 @@ class OverleafGitClient:
         try:
             res = self._run_git(["pull", "--rebase", "origin"], cwd=repo, check=False)
             if res.returncode != 0:
-                # Abort rebase if conflict and report clearly
                 self._run_git(["rebase", "--abort"], cwd=repo, check=False)
                 raise OverleafGitError(
                     f"Failed to pull latest changes from Overleaf: {res.stderr or res.stdout}"
@@ -187,7 +219,13 @@ class OverleafGitClient:
         }
         if auto_push:
             msg = commit_message or f"Update {target.relative_to(repo)} via Overleaf MCP"
-            sync_info = self.commit_and_push(message=msg, project=project, repo_path=repo)
+            sync_info = self.commit_and_push(
+                message=msg,
+                project=project,
+                repo_path=repo,
+                changed_file=str(target.relative_to(repo)),
+                changed_content=content,
+            )
             result.update(sync_info)
         return result
 
@@ -218,8 +256,11 @@ class OverleafGitClient:
         message: str = "Update from Overleaf MCP",
         project: Optional[str] = None,
         repo_path: Optional[Path] = None,
+        changed_file: Optional[str] = None,
+        changed_content: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Stage all changes, commit, and push back to Overleaf Git Bridge."""
+        """Stage all changes, commit, and push back to Overleaf (via Git Bridge or Free-Tier Browser editor)."""
+        resolved = self.config.resolve_project_id(project)
         repo = repo_path or self.ensure_repo(project, auto_pull=False)
         self._run_git(["add", "-A"], cwd=repo)
 
@@ -233,6 +274,25 @@ class OverleafGitClient:
 
         self._run_git(["commit", "-m", message], cwd=repo)
         commit_hash = self._run_git(["rev-parse", "--short", "HEAD"], cwd=repo).stdout
+
+        sync_mode = os.getenv("OVERLEAF_SYNC_MODE", "auto").strip().lower()
+        remotes = self._run_git(["remote"], cwd=repo, check=False).stdout.splitlines()
+        if sync_mode == "browser" or resolved in self._browser_mode_projects or "origin" not in remotes:
+            if changed_file and changed_content is not None:
+                run_sync(
+                    self.browser_client.write_file_in_browser(
+                        file_path=changed_file,
+                        new_content=changed_content,
+                        project_id_or_url=resolved,
+                    )
+                )
+            return {
+                "committed": True,
+                "pushed": True,
+                "sync_mode": "browser_free_tier",
+                "commit": commit_hash,
+                "message": message,
+            }
 
         # Push; if rejected due to concurrent Overleaf edits, pull --rebase and retry once
         push_res = self._run_git(["push", "origin", "HEAD"], cwd=repo, check=False)
