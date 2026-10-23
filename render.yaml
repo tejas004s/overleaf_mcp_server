@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: overleaf-mcp-server
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: OVERLEAF_GIT_TOKEN
+        sync: false
+      - key: OVERLEAF_PROJECT_ID
+        sync: false
+      - key: MCP_TRANSPORT
+        value: streamable-http
+      - key: MCP_PORT
+        value: "8000"
+      - key: MCP_API_KEY
+        generateValue: true

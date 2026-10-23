@@ -1,0 +1,40 @@
+{
+  "first_name": "Alex",
+  "last_name": "Rivera",
+  "email": "alex.rivera@example.com",
+  "phone": "555-019-2834",
+  "phone_country_code": "United States (+1)",
+  "city": "San Francisco, California, United States",
+  "linkedin_url": "https://www.linkedin.com/in/alex-rivera",
+  "github_url": "https://github.com/alexrivera",
+  "portfolio_url": "https://alexrivera.dev",
+  "resume_path": "",
+  "headline": "Senior Machine Learning & Backend Engineer",
+  "summary": "5+ years building distributed Python backend services, LLM agents, and production ML systems.",
+  "years_of_experience": {
+    "default": "5",
+    "python": "6",
+    "machine learning": "5",
+    "pytorch": "4",
+    "aws": "5",
+    "docker": "5",
+    "kubernetes": "3",
+    "sql": "5"
+  },
+  "work_authorization": {
+    "authorized_to_work": "Yes",
+    "require_sponsorship": "No",
+    "willing_to_relocate": "Yes",
+    "remote_preference": "Yes"
+  },
+  "compensation": {
+    "expected_salary": "180000",
+    "notice_period_days": "14"
+  },
+  "custom_answers": {
+    "how did you hear about us": "LinkedIn",
+    "gender": "Decline to self-identify",
+    "veteran": "I am not a protected veteran",
+    "disability": "I do not have a disability"
+  }
+}

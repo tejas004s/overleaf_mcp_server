@@ -1,0 +1,22 @@
+services:
+  overleaf-mcp:
+    build: .
+    container_name: overleaf-mcp-server
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    environment:
+      - OVERLEAF_GIT_TOKEN=${OVERLEAF_GIT_TOKEN}
+      - OVERLEAF_PROJECT_ID=${OVERLEAF_PROJECT_ID:-}
+      - OVERLEAF_PROJECTS=${OVERLEAF_PROJECTS:-}
+      - OVERLEAF_GIT_BASE_URL=${OVERLEAF_GIT_BASE_URL:-https://git.overleaf.com}
+      - OVERLEAF_WORKSPACE_DIR=/data/overleaf_workspace
+      - MCP_TRANSPORT=${MCP_TRANSPORT:-streamable-http}
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - MCP_API_KEY=${MCP_API_KEY:-}
+    volumes:
+      - overleaf_workspace:/data/overleaf_workspace
+    restart: unless-stopped
+
+volumes:
+  overleaf_workspace:

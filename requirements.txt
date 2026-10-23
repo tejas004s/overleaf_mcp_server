@@ -1,0 +1,7 @@
+mcp[cli]>=1.2.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+uvicorn>=0.30.0
+starlette>=0.37.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
