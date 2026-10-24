@@ -3,183 +3,123 @@
 [![MCP](https://img.shields.io/badge/Model_Context_Protocol-MCP-blue)](https://modelcontextprotocol.io)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Transports](https://img.shields.io/badge/Transports-stdio%20%7C%20SSE%20%7C%20Streamable--HTTP-purple)](#3-integrating-with-claude-gemini-and-chatgpt)
+[![Transports](https://img.shields.io/badge/Transports-stdio%20%7C%20SSE%20%7C%20Streamable--HTTP-purple)](#step-4--connect-to-claude-chatgpt-or-gemini)
 
 **Tags / Topics:** `mcp` `model-context-protocol` `overleaf` `latex` `bibtex` `linkedin` `easy-apply` `playwright` `chrome-cdp` `claude` `chatgpt` `gemini` `fastmcp`
 
-A production-ready **Model Context Protocol (MCP)** suite designed for **Claude** (Desktop & Claude Code), **ChatGPT** (Custom MCP Connectors), and **Gemini** (CLI & Antigravity):
+Connect **Claude**, **ChatGPT**, or **Gemini** to your **Overleaf** account (works on **Free Tier** via Playwright Browser Automation as well as Paid Tier via Git Bridge) AND to **LinkedIn Easy Apply** via Chrome Remote Debugging.
 
-1. **`overleaf-mcp` (Root Package)** — Connects your AI assistant to **Overleaf** via the official **Overleaf Git Bridge** to read, edit, structure, audit citations/references, and push `.tex` & `.bib` files in real time.
-2. **`linkedin-mcp` ([`./linkedin_mcp_server`](./linkedin_mcp_server))** — Connects via **Playwright / Chrome Remote Debugging (`--remote-debugging-port=9222`)** to your logged-in Chrome browser to search LinkedIn jobs, read job descriptions, auto-fill **LinkedIn Easy Apply** modals using your resume/profile data, and pause at the final **"Submit application"** button for human confirmation.
-
----
-
-## Repository Structure
-
-```text
-overleaf_mcp_server/
-├── src/overleaf_mcp/          # Overleaf Git Bridge MCP Server
-│   ├── config.py              # Environment & multi-project registry
-│   ├── git_client.py          # Git clone, pull --rebase, commit, push, secret redaction
-│   ├── latex_parser.py        # Section parser, BibTeX manager, citation & syntax auditor
-│   └── server.py              # MCP tools, prompts, stdio + HTTP/SSE Starlette server
-├── tests/                     # End-to-end Overleaf MCP tests (simulated bare Git remote)
-├── linkedin_mcp_server/       # LinkedIn Easy Apply Browser Automation MCP Server
-│   ├── src/linkedin_mcp/
-│   │   ├── browser_manager.py # Chrome CDP (:9222) & persistent context manager
-│   │   ├── linkedin_automator.py # Job search, Easy Apply modal inspector & human-gated filler
-│   │   ├── profile_store.py   # Candidate resume/profile JSON & question matcher
-│   │   └── server.py          # LinkedIn MCP tools & multi-transport runner
-│   ├── profile.example.json   # Template candidate profile for Easy Apply
-│   └── tests/                 # LinkedIn MCP test suite
-├── Dockerfile                 # Container image for remote HTTP/SSE deployment
-├── docker-compose.yml         # Local & VPS Docker Compose setup
-└── render.yaml                # One-click Render cloud deployment manifest
-```
+Give Claude a job description and your Overleaf project URL—it will open your resume/paper on Overleaf, tailor the LaTeX, recompile, check for errors, and return a **clickable PDF download link**.
 
 ---
 
-## 1. Overleaf Git Bridge MCP Server (`overleaf-mcp`)
+## Cloud Deployment (Railway / Render — Recommended)
 
-### Prerequisites: Get Your Overleaf Git Token & Project ID
+### Step 1 — Deploy to Railway or Render
 
-1. **Generate an Overleaf Git Token**:
-   - Open [Overleaf Account Settings](https://www.overleaf.com/user/settings).
-   - Scroll to **Git Integration** and click **Create Token**.
-   - Copy the token (starts with `olp_...`).
-2. **Find Your Overleaf Project ID**:
-   - Open your project in Overleaf: `https://www.overleaf.com/project/<PROJECT_ID>`
-   - Copy `<PROJECT_ID>` (or pass the full URL directly to `register_project`).
+1. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo** → select `tejas004s/overleaf_mcp_server` (uses [`railway.json`](./railway.json) and [`Dockerfile`](./Dockerfile) automatically).
+2. Under **Settings → Networking**, click **Generate Domain** and copy your public URL (e.g. `https://your-app.up.railway.app`).
 
-### Installation
+### Step 2 — Export Your Overleaf Session Locally
+
+Because Overleaf's Free Tier does not provide API/Git keys, you log in once locally in a visible browser and export your session state as a single base64 environment variable (`OVERLEAF_STORAGE_STATE_B64`):
 
 ```bash
-pip install -e ".[dev]"
-cp .env.example .env
+git clone https://github.com/tejas004s/overleaf_mcp_server.git
+cd overleaf_mcp_server
+pip install -r requirements.txt
+playwright install chromium
+
+python3 setup_auth.py       # Opens a browser window — log in to Overleaf, then press Enter
+python3 export_session.py   # Prints your authenticated session as OVERLEAF_STORAGE_STATE_B64
 ```
 
-### Overleaf MCP Tools
+### Step 3 — Set Cloud Environment Variables
 
-| Tool | Description |
+In **Railway → Variables** (or Render Environment Variables), add:
+
+| Variable | Value |
 | :--- | :--- |
-| `register_project` | Register an Overleaf project alias by Project ID or Overleaf URL |
-| `list_projects` | List all configured project aliases and default project |
-| `sync_project` | Clone or `git pull --rebase` latest changes from Overleaf |
-| `get_project_status` | Show Git status, uncommitted diffs, and recent Overleaf commit history |
-| `list_files` | List all files in the project (with optional `.tex` / `.bib` filter) |
-| `read_file` | Read the full contents of a file in the project |
-| `write_file` | Create or overwrite a file and automatically commit & push to Overleaf |
-| `edit_file_snippet` | Surgically replace an exact snippet inside a file and push to Overleaf |
-| `delete_file` | Delete a file from the project and push to Overleaf |
-| `push_changes` | Commit and push any pending local modifications to Overleaf |
-| `get_document_outline` | Parse `\section`, `\subsection`, etc. hierarchy with line ranges |
-| `read_section` | Read a specific LaTeX section by title or 0-based index |
-| `update_section` | Replace a specific LaTeX section and push to Overleaf |
-| `list_bibliography` | Parse and search BibTeX entries in `.bib` files |
-| `add_or_update_bib_entry` | Add or update a BibTeX entry in `.bib` and push to Overleaf |
-| `audit_references_and_citations` | Find missing citations, broken `\ref` links, unused `.bib` keys, and duplicate labels |
-| `validate_and_compile` | Check LaTeX syntax (environments/braces) and run local `latexmk`/`pdflatex` if available |
+| `OVERLEAF_STORAGE_STATE_B64` | *(Paste the base64 string printed by `export_session.py`)* |
+| `MCP_TRANSPORT` | `streamable-http` |
+
+*(Alternative: You can also set `OVERLEAF_SESSION_COOKIE` to your raw `overleaf_session2=...` cookie from Chrome DevTools).*
+
+### Step 4 — Connect to Claude, ChatGPT, or Gemini
+
+- **Interactive Web Test Console**: Open `https://your-app.up.railway.app/` in your browser to test login status and live LaTeX project reading with one click.
+- **Claude.ai (Web) / ChatGPT Connectors**:
+  Go to **Settings → Integrations → Add Integration** and paste:
+  ```text
+  https://your-app.up.railway.app/mcp
+  ```
+- **Claude Desktop (`claude_desktop_config.json`) / Gemini CLI (`~/.gemini/settings.json`)**:
+  ```json
+  {
+    "mcpServers": {
+      "overleaf": {
+        "url": "https://your-app.up.railway.app/mcp"
+      }
+    }
+  }
+  ```
 
 ---
 
-## 2. LinkedIn Easy Apply Browser Automation MCP (`linkedin-mcp`)
-
-See [`linkedin_mcp_server/README.md`](./linkedin_mcp_server/README.md) for full details.
-
-### Installation & Setup
+## Local Setup (HTTP or `stdio`)
 
 ```bash
-cd linkedin_mcp_server
-pip install -e ".[dev]"
-cp profile.example.json profile.json
+python3 setup_auth.py   # Log in to Overleaf once (saves to ./browser_data)
+./run_server.sh         # Starts Streamable-HTTP server + Test Console at http://127.0.0.1:8000/mcp
 ```
 
-Start Chrome with Remote Debugging enabled (or ask your AI assistant to run `launch_chrome_debug_session`):
-
-```bash
-google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.linkedin_mcp_chrome_profile" "https://www.linkedin.com/jobs/"
-```
-
-### LinkedIn MCP Tools
-
-| Tool | Description |
-| :--- | :--- |
-| `launch_chrome_debug_session` | Launch Chrome with `--remote-debugging-port=9222` and persistent profile |
-| `check_linkedin_session` | Verify browser connection and check whether LinkedIn is logged in |
-| `get_candidate_profile` | View the candidate's saved resume/profile JSON |
-| `update_candidate_profile` | Update contact info, skill years of experience, visa status, or custom Q&A |
-| `search_linkedin_jobs` | Search LinkedIn jobs with keywords, location, Easy Apply (`f_AL=true`), remote/hybrid, and recency filters |
-| `get_linkedin_job_details` | Open a job listing and read the full job description and Easy Apply status |
-| `start_easy_apply` | Click the **Easy Apply** button and inspect the first step's form fields |
-| `inspect_easy_apply_modal` | Inspect current modal fields, profile-matched values, validation errors, and buttons |
-| `fill_easy_apply_step` | Fill current modal step and click `Next`/`Review` (never clicks `Submit application`) |
-| `autofill_easy_apply_until_review` | Walk through all Easy Apply steps automatically and pause at the final `Submit application` button |
-| `submit_easy_apply` | Click the final `Submit application` button (requires explicit `confirm_submit=True`) |
-
----
-
-## 3. Integrating with Claude, Gemini, and ChatGPT
-
-### A. Claude Desktop (`claude_desktop_config.json`) & Gemini CLI (`~/.gemini/settings.json`)
+Or run directly via `stdio` in `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "overleaf": {
-      "command": "overleaf-mcp",
-      "args": ["--transport", "stdio"],
+      "command": "/home/vboxuser/.local/bin/overleaf-mcp",
+      "args": ["--transport", "stdio", "--no-headless"],
       "env": {
-        "OVERLEAF_GIT_TOKEN": "olp_your_git_token_here",
-        "OVERLEAF_PROJECT_ID": "your_default_project_id"
+        "OVERLEAF_SHARE_URL": "https://www.overleaf.com/project/<YOUR_PROJECT_ID>"
       }
     },
     "linkedin-easy-apply": {
-      "command": "linkedin-mcp",
+      "command": "/home/vboxuser/.local/bin/linkedin-mcp",
       "args": ["--transport", "stdio"],
       "env": {
         "CHROME_CDP_URL": "http://127.0.0.1:9222",
-        "LINKEDIN_PROFILE_PATH": "/absolute/path/to/profile.json"
+        "LINKEDIN_PROFILE_PATH": "/home/vboxuser/Documents/mcp_server/overleaf_mcp_server/linkedin_mcp_server/profile.json"
       }
     }
   }
 }
 ```
 
-### B. Claude Code (CLI)
+---
 
-```bash
-claude mcp add overleaf \
-  -e OVERLEAF_GIT_TOKEN=olp_your_git_token_here \
-  -e OVERLEAF_PROJECT_ID=your_default_project_id \
-  -- overleaf-mcp --transport stdio
+## Available Overleaf MCP Tools
 
-claude mcp add linkedin-easy-apply \
-  -e CHROME_CDP_URL=http://127.0.0.1:9222 \
-  -- linkedin-mcp --transport stdio
-```
-
-### C. ChatGPT (Developer Mode / Custom MCP Connector) & Docker Deployment
-
-ChatGPT connects to remote MCP servers over HTTPS (`streamable-http` or `sse`).
-
-```bash
-# Run with Docker Compose on port 8000
-OVERLEAF_GIT_TOKEN=olp_your_token \
-OVERLEAF_PROJECT_ID=your_project_id \
-MCP_TRANSPORT=streamable-http \
-docker compose up --build -d
-```
-
-Or deploy directly to **Render**, **Railway**, **Fly.io**, or **Google Cloud Run** using the included [`Dockerfile`](./Dockerfile) and [`render.yaml`](./render.yaml).
+| Tool | Description |
+| :--- | :--- |
+| `overleaf_status` | Check Overleaf browser authentication status |
+| `overleaf_open_project` | Open an Overleaf project by URL, share link, or ID |
+| `overleaf_list_files` | List files in the Overleaf project file tree |
+| `overleaf_open_file` | Switch the active editor to a specific file (`main.tex`, `references.bib`, etc.) |
+| `overleaf_get_latex` | Read complete LaTeX source from Overleaf's CodeMirror 6 editor |
+| `overleaf_set_latex` | Write updated LaTeX code directly to Overleaf's editor |
+| `overleaf_recompile` | Trigger Recompile on Overleaf and inspect compile errors/warnings |
+| `overleaf_download_pdf` | Download the compiled PDF and return a clickable `/download/<file>.pdf` URL |
+| `overleaf_take_screenshot` | Capture a screenshot of the Overleaf editor and PDF viewer |
+| `tailor_resume_instructions` | Best-practice instructions for tailoring a LaTeX resume to a Job Description |
+| `get_document_outline` | Parse `\section`, `\subsection`, etc. hierarchy with line numbers |
+| `read_section` / `update_section` | Read or replace a specific section by title or index |
+| `list_bibliography` / `add_or_update_bib_entry` | Search and manage `.bib` entries |
+| `audit_references_and_citations` | Detect missing citations, broken `\ref` links, and duplicate `\label`s |
 
 ---
 
-## Running Tests
+## LinkedIn Easy Apply Browser Automation MCP (`linkedin-mcp`)
 
-```bash
-# Run Overleaf MCP tests
-pytest -v
-
-# Run LinkedIn MCP tests
-pytest linkedin_mcp_server/tests -v
-```
+Located in [`./linkedin_mcp_server`](./linkedin_mcp_server/README.md). Connects to your logged-in Chrome browser (`--remote-debugging-port=9222`) to search LinkedIn jobs, read job descriptions, auto-fill **Easy Apply** modals using your `profile.json`, and pause at the final **Submit application** button for human confirmation.

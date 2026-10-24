@@ -1,24 +1,27 @@
-"""FastMCP server implementation for Overleaf Git Bridge integration."""
+"""Overleaf MCP Server (Free-Tier Playwright Browser Automation + Git Bridge + Cloud Deployment)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import traceback
 from typing import Any, Optional
 
 try:
     from mcp.server.mcpserver import MCPServer as FastMCP
 except ImportError:
     from mcp.server.fastmcp import FastMCP
+
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route
 
+from .browser_client import OVERLEAF_OUTPUT_DIR, PUBLIC_URL, SERVER_HOST, SERVER_PORT, TRANSPORT
 from .config import OverleafConfig
 from .git_client import OverleafGitClient
 from .latex_parser import (
@@ -33,10 +36,11 @@ from .latex_parser import (
 )
 
 mcp = FastMCP(
-    "Overleaf MCP Server",
+    "overleaf-latex-mcp",
     instructions=(
-        "Read, edit, structure, audit, and synchronize Overleaf LaTeX projects "
-        "via the official Overleaf Git Bridge."
+        "Connects Claude, ChatGPT, and Gemini to Overleaf (via Free-Tier Playwright Browser Automation "
+        "or Overleaf Git Bridge) to tailor LaTeX resumes/papers, edit sections, manage BibTeX citations, "
+        "recompile, and return clickable PDF download links."
     ),
 )
 
@@ -44,7 +48,7 @@ _client: Optional[OverleafGitClient] = None
 
 
 def get_client() -> OverleafGitClient:
-    """Return or initialize the singleton OverleafGitClient."""
+    """Return or initialize the singleton OverleafGitClient (which also owns browser_client)."""
     global _client
     if _client is None:
         _client = OverleafGitClient(OverleafConfig())
@@ -61,9 +65,296 @@ def _format_json(data: Any) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
+def _build_download_url(request: Optional[Request], filename: str) -> str:
+    """Build the full absolute download URL, preferring PUBLIC_URL / RAILWAY_PUBLIC_DOMAIN."""
+    if PUBLIC_URL:
+        return f"{PUBLIC_URL}/download/{filename}"
+    base = str(request.base_url).rstrip("/") if request else ""
+    return f"{base}/download/{filename}" if base else f"/download/{filename}"
+
+
 # ---------------------------------------------------------------------------
-# Project Management & Sync Tools
+# Web Dashboard & PDF Download Routes (for Railway / Render / Local HTTP)
 # ---------------------------------------------------------------------------
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Overleaf MCP Server - Test Console</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 30px 20px; display: flex; justify-content: center; }
+        .container { max-width: 820px; width: 100%; background: #1e293b; border-radius: 12px; padding: 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #334155; }
+        h1 { margin-top: 0; color: #38bdf8; font-size: 24px; display: flex; align-items: center; justify-content: space-between; }
+        .badge { background: #10b981; color: #022c22; font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 9999px; }
+        .endpoint-card { background: #0f172a; border-left: 4px solid #38bdf8; padding: 14px 16px; margin: 18px 0; border-radius: 6px; font-family: monospace; font-size: 14px; word-break: break-all; }
+        .section { background: #0f172a; border-radius: 8px; padding: 18px; margin-top: 20px; border: 1px solid #334155; }
+        h2 { font-size: 16px; color: #94a3b8; margin-top: 0; text-transform: uppercase; letter-spacing: 0.05em; }
+        button { background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        button:hover { background: #1d4ed8; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        input { width: 100%; padding: 10px 14px; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: white; font-size: 14px; margin-bottom: 12px; }
+        pre { background: #020617; padding: 14px; border-radius: 6px; overflow-x: auto; color: #38bdf8; font-size: 13px; max-height: 260px; }
+        .status-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #10b981; margin-right: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            <span>📄 Overleaf MCP Server</span>
+            <span class="badge"><span class="status-indicator"></span>ONLINE</span>
+        </h1>
+
+        <p style="color: #94a3b8; margin-bottom: 8px;">Claude / ChatGPT / Gemini MCP Streamable HTTP Endpoint:</p>
+        <div class="endpoint-card">
+            <span id="mcp-url">Loading...</span>
+        </div>
+
+        <div class="section">
+            <h2>🧪 Test 1: Overleaf Login Status</h2>
+            <p style="color: #cbd5e1; font-size: 14px;">Verify that the browser profile or OVERLEAF_STORAGE_STATE_B64 is authenticated into Overleaf.</p>
+            <button id="btn-auth" onclick="testAuth()">Check Overleaf Login Status</button>
+            <pre id="auth-output" style="display:none;"></pre>
+        </div>
+
+        <div class="section">
+            <h2>🧪 Test 2: Live Project Read Test</h2>
+            <p style="color: #cbd5e1; font-size: 14px;">Enter an Overleaf project URL or share URL to test opening it and reading the LaTeX source code.</p>
+            <input type="text" id="project-url" placeholder="https://www.overleaf.com/project/6ab69fcdfed103759283b936/share#..." />
+            <button id="btn-project" onclick="testProject()">Open & Read LaTeX</button>
+            <pre id="project-output" style="display:none;"></pre>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('mcp-url').innerText = window.location.origin + '/mcp';
+
+        async function testAuth() {
+            const btn = document.getElementById('btn-auth');
+            const out = document.getElementById('auth-output');
+            btn.disabled = true;
+            btn.innerText = 'Checking...';
+            out.style.display = 'block';
+            out.innerText = 'Checking Overleaf session in browser...';
+            try {
+                const res = await fetch('/api/test-auth');
+                const data = await res.json();
+                out.innerText = JSON.stringify(data, null, 2);
+            } catch(e) {
+                out.innerText = 'Error: ' + e.message;
+            }
+            btn.disabled = false;
+            btn.innerText = 'Check Overleaf Login Status';
+        }
+
+        async function testProject() {
+            const input = document.getElementById('project-url').value.trim();
+            const btn = document.getElementById('btn-project');
+            const out = document.getElementById('project-output');
+            if (!input) {
+                alert('Please enter an Overleaf project URL first.');
+                return;
+            }
+            btn.disabled = true;
+            btn.innerText = 'Opening project...';
+            out.style.display = 'block';
+            out.innerText = 'Launching browser, navigating to Overleaf project and extracting LaTeX...';
+            try {
+                const res = await fetch('/api/test-project', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ project_url: input })
+                });
+                const data = await res.json();
+                out.innerText = JSON.stringify(data, null, 2);
+            } catch(e) {
+                out.innerText = 'Error: ' + e.message;
+            }
+            btn.disabled = false;
+            btn.innerText = 'Open & Read LaTeX';
+        }
+    </script>
+</body>
+</html>
+"""
+
+
+async def root_dashboard(_request: Request) -> HTMLResponse:
+    return HTMLResponse(DASHBOARD_HTML)
+
+
+async def download_file_endpoint(request: Request) -> Any:
+    filename = request.path_params.get("filename", "")
+    file_path = OVERLEAF_OUTPUT_DIR / filename
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(
+            path=str(file_path),
+            filename=filename,
+            media_type="application/pdf",
+        )
+    return HTMLResponse("<h3>File not found</h3>", status_code=404)
+
+
+async def api_test_auth(_request: Request) -> JSONResponse:
+    res = await get_client().browser_client.check_auth_status()
+    return JSONResponse(res)
+
+
+async def api_test_project(request: Request) -> JSONResponse:
+    try:
+        data = await request.json()
+        project_url = data.get("project_url", "")
+        bclient = get_client().browser_client
+        open_res = await bclient.open_project(project_url)
+        if not open_res.get("success"):
+            return JSONResponse(open_res)
+        latex_res = await bclient.get_latex_content()
+        full_latex = latex_res.get("latex") or ""
+        return JSONResponse(
+            {
+                "open_result": open_res,
+                "latex_success": latex_res.get("success"),
+                "line_count": len(full_latex.splitlines()),
+                "latex_preview": full_latex[:600]
+                + ("\n... [truncated for display]" if len(full_latex) > 600 else ""),
+            }
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            },
+            status_code=200,
+        )
+
+
+# Register custom routes directly on MCPServer if supported (mcp >= 2.0)
+if hasattr(mcp, "custom_route"):
+    mcp.custom_route("/", methods=["GET"])(root_dashboard)
+    mcp.custom_route("/download/{filename}", methods=["GET"])(download_file_endpoint)
+    mcp.custom_route("/api/test-auth", methods=["GET"])(api_test_auth)
+    mcp.custom_route("/api/test-project", methods=["POST"])(api_test_project)
+
+
+# ---------------------------------------------------------------------------
+# Browser-Native Overleaf Tools (Works on Free Tier & Cloud Deployments)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def overleaf_status() -> str:
+    """Check the connection status and whether the user is authenticated in Overleaf.
+    Call this first to verify that your session is ready.
+    """
+    res = await get_client().browser_client.check_auth_status()
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_open_project(project_url_or_id: str) -> str:
+    """Open an Overleaf project by its URL, share link, or 24-character Project ID.
+    Example: 'https://www.overleaf.com/project/6ab69f.../share#...' or '6ab69f...'
+    Returns project title, current open file name, and status.
+    """
+    res = await get_client().browser_client.open_project(project_url_or_id)
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_list_files() -> str:
+    """List all the files and folders in the currently open Overleaf project file tree.
+    Useful for locating 'main.tex', 'resume.cls', or modular section files.
+    """
+    res = await get_client().browser_client.list_files()
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_open_file(filename: str) -> str:
+    """Switch the Overleaf editor to a specific file in the project (e.g., 'main.tex', 'references.bib')."""
+    res = await get_client().browser_client.open_file(filename)
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_get_latex() -> str:
+    """Read and return the complete LaTeX source code currently open in the Overleaf editor."""
+    res = await get_client().browser_client.get_latex_content()
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_set_latex(latex_code: str) -> str:
+    """Replace the Overleaf editor content with the updated LaTeX code.
+    Overleaf will automatically synchronize and autosave the changes.
+    """
+    res = await get_client().browser_client.set_latex_content(latex_code)
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_recompile(timeout_seconds: int = 35) -> str:
+    """Trigger the 'Recompile' action in Overleaf and check for compilation errors or warnings.
+    Always call this after updating LaTeX code to ensure there are no syntax or formatting errors.
+    """
+    res = await get_client().browser_client.recompile(timeout_seconds=timeout_seconds)
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_download_pdf(filename: Optional[str] = None) -> str:
+    """Download the freshly compiled PDF from Overleaf to the server and return a clickable download_url."""
+    res = await get_client().browser_client.download_pdf(custom_filename=filename)
+    if res.get("success") and "file_name" in res:
+        full_url = _build_download_url(None, res["file_name"])
+        res["download_url"] = full_url
+        res["action_for_claude"] = (
+            f"Present this exact clickable link to the user: "
+            f"[Download Compiled PDF]({full_url})  "
+            f"The URL is: {full_url}"
+        )
+    return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_take_screenshot(filename: Optional[str] = None) -> str:
+    """Take a screenshot of the Overleaf page (editor or PDF preview) and save it locally."""
+    res = await get_client().browser_client.take_screenshot(filename=filename)
+    return _format_json(res)
+
+
+@mcp.tool()
+def tailor_resume_instructions() -> str:
+    """Return guidance and best practices for tailoring a LaTeX resume to a Job Description (JD)."""
+    instructions = {
+        "latex_safety": [
+            "Always escape special LaTeX characters: &, %, $, #, _, {, }, ~, ^",
+            "Keep LaTeX environment tags matched: \\begin{itemize} ... \\end{itemize}",
+            "Preserve page constraints (usually strict 1 page or 2 pages) by avoiding excessive line additions",
+            "Maintain typography commands (e.g. \\textbf, \\textit, \\small, \\hfill) according to the template",
+        ],
+        "tailoring_strategy": [
+            "Extract top 5-10 technical and domain keywords from the JD (technologies, methodologies, leadership words)",
+            "Weave keywords naturally into existing experience bullets rather than keyword-stuffing",
+            "Use the Google XYZ bullet formula: 'Accomplished [X] as measured by [Y], by doing [Z]'",
+            "Update the Skills section to prioritize tech stack items that match the JD requirements",
+            "Customize the Summary/Header subtitle (if present) to align with the target job title",
+        ],
+        "workflow": [
+            "1. Call overleaf_open_project with user's project URL",
+            "2. Call overleaf_get_latex to retrieve source resume",
+            "3. Analyze JD against the resume and draft tailored changes",
+            "4. Call overleaf_set_latex with the complete updated LaTeX code",
+            "5. Call overleaf_recompile to verify zero compile errors",
+            "6. Call overleaf_download_pdf to deliver the final PDF link to the user",
+            "7. Return a summary of tailored keywords, updated bullets, and ATS optimization score",
+        ],
+    }
+    return _format_json(instructions)
 
 
 @mcp.tool()
@@ -71,7 +362,7 @@ def launch_overleaf_browser(
     share_or_project_url: Optional[str] = None,
     port: int = 9222,
 ) -> str:
-    """Launch Google Chrome with Remote Debugging (--remote-debugging-port=9222) for Free-Tier Overleaf projects.
+    """Launch Google Chrome with Remote Debugging (--remote-debugging-port=9222) for interactive Overleaf login.
 
     Args:
         share_or_project_url: Optional Overleaf project or share URL to open immediately.
@@ -99,19 +390,18 @@ async def check_overleaf_browser_session(
     return _format_json(res)
 
 
+# ---------------------------------------------------------------------------
+# Project Management, File Sync, Section & BibTeX Tools
+# ---------------------------------------------------------------------------
+
+
 @mcp.tool()
 def register_project(
     alias: str,
     project_id_or_url: str,
     set_default: bool = True,
 ) -> str:
-    """Register an Overleaf project by its alias and Overleaf Project ID or URL.
-
-    Args:
-        alias: Short friendly name for the project (e.g., 'neurips_paper', 'thesis').
-        project_id_or_url: Overleaf project URL (https://www.overleaf.com/project/<ID>) or raw ID.
-        set_default: Whether to make this the default active project.
-    """
+    """Register an Overleaf project by its alias and Overleaf Project ID or URL."""
     client = get_client()
     resolved = client.config.register_project(alias, project_id_or_url, set_default=set_default)
     return _format_json(
@@ -141,11 +431,7 @@ def list_projects() -> str:
 
 @mcp.tool()
 def sync_project(project: Optional[str] = None) -> str:
-    """Clone or pull the latest changes from Overleaf for the specified project.
-
-    Args:
-        project: Optional project alias, ID, or URL. Uses default project if omitted.
-    """
+    """Clone or pull the latest changes from Overleaf for the specified project."""
     client = get_client()
     repo = client.ensure_repo(project=project, auto_pull=False)
     pull_output = client.pull(project=project, repo_path=repo)
@@ -162,12 +448,7 @@ def sync_project(project: Optional[str] = None) -> str:
 
 @mcp.tool()
 def get_project_status(project: Optional[str] = None, history_limit: int = 10) -> str:
-    """Inspect the Git status, uncommitted diffs, and recent commit history of an Overleaf project.
-
-    Args:
-        project: Optional project alias or ID.
-        history_limit: Number of recent commits to return (default 10).
-    """
+    """Inspect the Git status, uncommitted diffs, and recent commit history of an Overleaf project."""
     client = get_client()
     status_diff = client.status_and_diff(project=project)
     history = client.get_history(project=project, limit=history_limit)
@@ -181,22 +462,12 @@ def get_project_status(project: Optional[str] = None, history_limit: int = 10) -
     )
 
 
-# ---------------------------------------------------------------------------
-# File Operations Tools
-# ---------------------------------------------------------------------------
-
-
 @mcp.tool()
 def list_files(
     project: Optional[str] = None,
     extension_filter: Optional[str] = None,
 ) -> str:
-    """List files in the Overleaf project (automatically pulls latest changes first).
-
-    Args:
-        project: Optional project alias or ID.
-        extension_filter: Optional suffix filter such as '.tex' or '.bib'.
-    """
+    """List files in the Overleaf project workspace."""
     client = get_client()
     files = client.list_files(project=project, extension_filter=extension_filter, auto_pull=True)
     return _format_json(
@@ -210,12 +481,7 @@ def list_files(
 
 @mcp.tool()
 def read_file(file_path: str = "main.tex", project: Optional[str] = None) -> str:
-    """Read the full contents of a file in the Overleaf project.
-
-    Args:
-        file_path: Relative path to the file inside the project (default 'main.tex').
-        project: Optional project alias or ID.
-    """
+    """Read the full contents of a file in the Overleaf project."""
     client = get_client()
     return client.read_file(file_path=file_path, project=project, auto_pull=True)
 
@@ -228,15 +494,7 @@ def write_file(
     auto_push: bool = True,
     project: Optional[str] = None,
 ) -> str:
-    """Create or overwrite a file in the Overleaf project and optionally commit & push to Overleaf.
-
-    Args:
-        file_path: Relative path to the file (e.g., 'main.tex', 'sections/intro.tex').
-        content: Complete text content to write to the file.
-        commit_message: Custom Git commit message for Overleaf history.
-        auto_push: If True (default), immediately commits and pushes changes to Overleaf.
-        project: Optional project alias or ID.
-    """
+    """Create or overwrite a file in the Overleaf project and sync back to Overleaf."""
     client = get_client()
     res = client.write_file(
         file_path=file_path,
@@ -257,16 +515,7 @@ def edit_file_snippet(
     auto_push: bool = True,
     project: Optional[str] = None,
 ) -> str:
-    """Replace an exact snippet of text inside a project file and sync back to Overleaf.
-
-    Args:
-        file_path: Relative path to the file (e.g., 'main.tex').
-        target_text: Exact substring to find in the file (must occur uniquely).
-        replacement_text: New text to replace target_text with.
-        commit_message: Optional commit message.
-        auto_push: If True (default), immediately commits and pushes to Overleaf.
-        project: Optional project alias or ID.
-    """
+    """Replace an exact snippet of text inside a project file and sync back to Overleaf."""
     client = get_client()
     current = client.read_file(file_path=file_path, project=project, auto_pull=True)
     occurrences = current.count(target_text)
@@ -297,14 +546,7 @@ def delete_file(
     auto_push: bool = True,
     project: Optional[str] = None,
 ) -> str:
-    """Delete a file from the Overleaf project and optionally push the deletion.
-
-    Args:
-        file_path: Relative path to the file to delete.
-        commit_message: Optional Git commit message.
-        auto_push: If True (default), commits and pushes the deletion to Overleaf.
-        project: Optional project alias or ID.
-    """
+    """Delete a file from the Overleaf project and optionally push the deletion."""
     client = get_client()
     res = client.delete_file(
         file_path=file_path,
@@ -320,20 +562,10 @@ def push_changes(
     commit_message: str = "Update from Overleaf MCP",
     project: Optional[str] = None,
 ) -> str:
-    """Commit and push any pending local changes back to Overleaf.
-
-    Args:
-        commit_message: Commit message describing the changes.
-        project: Optional project alias or ID.
-    """
+    """Commit and push any pending local changes back to Overleaf."""
     client = get_client()
     res = client.commit_and_push(message=commit_message, project=project)
     return _format_json(res)
-
-
-# ---------------------------------------------------------------------------
-# LaTeX Structure, Sections, BibTeX & Validation Tools
-# ---------------------------------------------------------------------------
 
 
 @mcp.tool()
@@ -341,12 +573,7 @@ def get_document_outline(
     file_path: str = "main.tex",
     project: Optional[str] = None,
 ) -> str:
-    """Parse a LaTeX file and return its hierarchical section outline with line numbers.
-
-    Args:
-        file_path: Relative path to the .tex file (default 'main.tex').
-        project: Optional project alias or ID.
-    """
+    """Parse a LaTeX file and return its hierarchical section outline with line numbers."""
     client = get_client()
     content = client.read_file(file_path=file_path, project=project, auto_pull=True)
     sections = parse_sections(content)
@@ -374,13 +601,7 @@ def read_section(
     file_path: str = "main.tex",
     project: Optional[str] = None,
 ) -> str:
-    """Read a specific section from a LaTeX file by its section title or 0-based index.
-
-    Args:
-        title_or_index: Section title (e.g., 'Introduction', 'Related Work') or index ('0', '1').
-        file_path: Relative path to the .tex file (default 'main.tex').
-        project: Optional project alias or ID.
-    """
+    """Read a specific section from a LaTeX file by its section title or 0-based index."""
     client = get_client()
     content = client.read_file(file_path=file_path, project=project, auto_pull=True)
     sec = get_section_content(content, title_or_index)
@@ -396,16 +617,7 @@ def update_section(
     auto_push: bool = True,
     project: Optional[str] = None,
 ) -> str:
-    """Replace the content of a specific LaTeX section (including its \\section{...} header) and sync to Overleaf.
-
-    Args:
-        title_or_index: Section title or 0-based section index to replace.
-        new_content: Full replacement LaTeX text for the section (including the \\section{...} line).
-        file_path: Relative path to the .tex file (default 'main.tex').
-        commit_message: Optional Git commit message.
-        auto_push: If True (default), commits and pushes the updated section to Overleaf.
-        project: Optional project alias or ID.
-    """
+    """Replace the content of a specific LaTeX section (including its \\section{...} header) and sync to Overleaf."""
     client = get_client()
     content = client.read_file(file_path=file_path, project=project, auto_pull=True)
     replaced = replace_section_content(content, title_or_index, new_content)
@@ -432,13 +644,7 @@ def list_bibliography(
     query: Optional[str] = None,
     project: Optional[str] = None,
 ) -> str:
-    """Parse and optionally search BibTeX entries in a .bib file.
-
-    Args:
-        bib_file: Relative path to the .bib file (default 'references.bib').
-        query: Optional search substring matching citation key, title, author, or year.
-        project: Optional project alias or ID.
-    """
+    """Parse and optionally search BibTeX entries in a .bib file."""
     client = get_client()
     bib_text = client.read_file(file_path=bib_file, project=project, auto_pull=True)
     entries = parse_bib_entries(bib_text)
@@ -469,15 +675,7 @@ def add_or_update_bib_entry(
     auto_push: bool = True,
     project: Optional[str] = None,
 ) -> str:
-    """Insert a new BibTeX entry or update an existing one by key in a .bib file.
-
-    Args:
-        raw_bibtex: Complete BibTeX entry string (e.g. '@article{vaswani2017attention, ...}').
-        bib_file: Relative path to the .bib file (default 'references.bib').
-        commit_message: Optional Git commit message.
-        auto_push: If True (default), commits and pushes the updated .bib file to Overleaf.
-        project: Optional project alias or ID.
-    """
+    """Insert a new BibTeX entry or update an existing one by key in a .bib file."""
     client = get_client()
     repo = client.ensure_repo(project=project, auto_pull=True)
     target = client.resolve_safe_file(repo, bib_file)
@@ -503,11 +701,7 @@ def add_or_update_bib_entry(
 
 @mcp.tool()
 def audit_references_and_citations(project: Optional[str] = None) -> str:
-    """Audit all .tex and .bib files in the project for missing citations, broken \\ref links, unused BibTeX entries, and duplicate labels.
-
-    Args:
-        project: Optional project alias or ID.
-    """
+    """Audit all .tex and .bib files in the project for missing citations, broken \\ref links, unused BibTeX entries, and duplicate labels."""
     client = get_client()
     repo = client.ensure_repo(project=project, auto_pull=True)
     report = analyze_project_references(repo)
@@ -519,12 +713,7 @@ def validate_and_compile(
     main_tex: str = "main.tex",
     project: Optional[str] = None,
 ) -> str:
-    """Validate LaTeX syntax (unclosed environments, unbalanced braces) and run local PDF compilation if latexmk/pdflatex is installed.
-
-    Args:
-        main_tex: Main .tex file to validate and compile (default 'main.tex').
-        project: Optional project alias or ID.
-    """
+    """Validate LaTeX syntax (unclosed environments, unbalanced braces) and run local PDF compilation if latexmk/pdflatex is installed."""
     client = get_client()
     repo = client.ensure_repo(project=project, auto_pull=True)
     tex_content = client.read_file(file_path=main_tex, project=project, auto_pull=False)
@@ -536,31 +725,6 @@ def validate_and_compile(
             "syntax_check": syntax,
             "compilation": compile_res,
         }
-    )
-
-
-# ---------------------------------------------------------------------------
-# MCP Prompts
-# ---------------------------------------------------------------------------
-
-
-@mcp.prompt()
-def review_paper_section(section_title: str, file_path: str = "main.tex") -> str:
-    """Prompt workflow to read, review, and polish a specific section of an Overleaf paper."""
-    return (
-        f"Please read section '{section_title}' from '{file_path}' using the `read_section` tool. "
-        "Review it for clarity, academic tone, mathematical precision, and LaTeX formatting. "
-        "Propose concrete improvements and ask if I would like you to apply them to Overleaf using `update_section`."
-    )
-
-
-@mcp.prompt()
-def audit_paper_quality(main_tex: str = "main.tex") -> str:
-    """Prompt workflow to run a comprehensive citation, reference, and syntax audit on the Overleaf project."""
-    return (
-        f"Please run `audit_references_and_citations` and `validate_and_compile` (on '{main_tex}') "
-        "for my Overleaf project. Summarize any missing citations, broken `\\ref` links, duplicate labels, "
-        "or LaTeX syntax errors, and help me fix them."
     )
 
 
@@ -577,7 +741,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         self.api_key = api_key
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
-        if request.url.path == "/health" or request.method == "OPTIONS":
+        if request.url.path in ("/", "/health", "/api/test-auth", "/api/test-project") or request.url.path.startswith("/download/") or request.method == "OPTIONS":
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
@@ -601,7 +765,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 
 def create_http_app(transport: str = "streamable-http", api_key: Optional[str] = None) -> Starlette:
-    """Create a Starlette ASGI application wrapping the FastMCP server with /health and CORS."""
+    """Create a Starlette ASGI application wrapping the MCPServer with test console, /download, and /health."""
     if transport == "sse":
         mcp_app = mcp.sse_app()
     else:
@@ -632,7 +796,11 @@ def create_http_app(transport: str = "streamable-http", api_key: Optional[str] =
         middlewares.append(Middleware(BearerAuthMiddleware, api_key=effective_key))
 
     routes = [
+        Route("/", endpoint=root_dashboard, methods=["GET"]),
         Route("/health", endpoint=health_endpoint, methods=["GET"]),
+        Route("/download/{filename}", endpoint=download_file_endpoint, methods=["GET"]),
+        Route("/api/test-auth", endpoint=api_test_auth, methods=["GET"]),
+        Route("/api/test-project", endpoint=api_test_project, methods=["POST"]),
         Mount("/", app=mcp_app),
     ]
 
@@ -651,24 +819,47 @@ def main() -> None:
     )
     parser.add_argument(
         "--host",
-        default=os.getenv("MCP_HOST", "0.0.0.0"),
-        help="Host address to bind when using sse or streamable-http (default: 0.0.0.0)",
+        default=SERVER_HOST,
+        help=f"Host address to bind when using sse or streamable-http (default: {SERVER_HOST})",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("MCP_PORT", os.getenv("PORT", "8000"))),
-        help="Port to bind when using sse or streamable-http (default: 8000)",
+        default=SERVER_PORT,
+        help=f"Port to bind when using sse or streamable-http (default: {SERVER_PORT})",
+    )
+    parser.add_argument(
+        "--no-headless",
+        action="store_true",
+        help="Run Playwright browser in visible mode (default is headless in cloud, configurable via OVERLEAF_HEADLESS)",
     )
     args = parser.parse_args()
 
-    if args.transport == "stdio":
-        mcp.run(transport="stdio")
-    else:
-        import uvicorn
+    if args.no_headless:
+        os.environ["OVERLEAF_HEADLESS"] = "false"
+        get_client().browser_client.headless = False
 
-        app = create_http_app(transport=args.transport)
-        uvicorn.run(app, host=args.host, port=args.port)
+    if args.transport == "stdio":
+        mcp.run("stdio")
+    else:
+        try:
+            from mcp.server.transport_security import TransportSecuritySettings
+
+            security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+            if args.transport == "sse":
+                mcp.run("sse", host=args.host, port=args.port, transport_security=security_settings)
+            else:
+                mcp.run(
+                    "streamable-http",
+                    host=args.host,
+                    port=args.port,
+                    transport_security=security_settings,
+                )
+        except (ImportError, TypeError):
+            import uvicorn
+
+            app = create_http_app(transport=args.transport)
+            uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

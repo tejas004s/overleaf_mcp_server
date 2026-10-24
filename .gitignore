@@ -9,3 +9,7 @@ venv/
 .env
 .overleaf_workspace/
 .pytest_cache/
+browser_data/
+output/
+storage_state.json
+linkedin_mcp_server/profile.json
