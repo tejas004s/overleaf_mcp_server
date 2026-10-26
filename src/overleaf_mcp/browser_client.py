@@ -465,14 +465,16 @@ class OverleafBrowserClient:
             await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
             await asyncio.sleep(1.5)
 
-            # If opening a /share#... link shows a "Join Project" / "OK, join project" button, click it automatically
+            # If opening a /share#... link shows a "Join Project" / "Accept" / "Join" / form submit button, click it automatically
             try:
                 join_btn = page.locator(
-                    "button:has-text('Join Project'), button:has-text('OK, join project'), a:has-text('Join Project')"
+                    "button:has-text('Join Project'), button:has-text('OK, join project'), a:has-text('Join Project'), "
+                    "button:has-text('Join'), a:has-text('Join'), button:has-text('Accept'), a:has-text('Accept'), "
+                    "form[action*='share'] button, button.btn-primary"
                 ).first
-                if await join_btn.is_visible(timeout=2000):
+                if await join_btn.is_visible(timeout=3000):
                     await join_btn.click()
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(3.0)
             except Exception:
                 pass
 
