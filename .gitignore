@@ -12,4 +12,5 @@ venv/
 browser_data/
 output/
 storage_state.json
+runtime_session.json
 linkedin_mcp_server/profile.json

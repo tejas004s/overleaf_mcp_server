@@ -82,20 +82,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Overleaf MCP Server - Test Console</title>
+    <title>Overleaf MCP Server - Easy Setup & Test Console</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 30px 20px; display: flex; justify-content: center; }
         .container { max-width: 820px; width: 100%; background: #1e293b; border-radius: 12px; padding: 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #334155; }
         h1 { margin-top: 0; color: #38bdf8; font-size: 24px; display: flex; align-items: center; justify-content: space-between; }
         .badge { background: #10b981; color: #022c22; font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 9999px; }
-        .endpoint-card { background: #0f172a; border-left: 4px solid #38bdf8; padding: 14px 16px; margin: 18px 0; border-radius: 6px; font-family: monospace; font-size: 14px; word-break: break-all; }
+        .endpoint-card { background: #0f172a; border-left: 4px solid #38bdf8; padding: 14px 16px; margin: 12px 0 18px; border-radius: 6px; font-family: monospace; font-size: 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; word-break: break-all; }
         .section { background: #0f172a; border-radius: 8px; padding: 18px; margin-top: 20px; border: 1px solid #334155; }
-        h2 { font-size: 16px; color: #94a3b8; margin-top: 0; text-transform: uppercase; letter-spacing: 0.05em; }
+        h2 { font-size: 16px; color: #38bdf8; margin-top: 0; letter-spacing: 0.03em; }
+        label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; font-weight: 600; }
         button { background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
         button:hover { background: #1d4ed8; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        input { width: 100%; padding: 10px 14px; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: white; font-size: 14px; margin-bottom: 12px; }
+        input { width: 100%; padding: 10px 14px; background: #1e293b; border: 1px solid #475569; border-radius: 6px; color: white; font-size: 14px; margin-bottom: 14px; }
         pre { background: #020617; padding: 14px; border-radius: 6px; overflow-x: auto; color: #38bdf8; font-size: 13px; max-height: 260px; }
         .status-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #10b981; margin-right: 8px; }
     </style>
@@ -107,56 +108,71 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span class="badge"><span class="status-indicator"></span>ONLINE</span>
         </h1>
 
-        <p style="color: #94a3b8; margin-bottom: 8px;">Claude / ChatGPT / Gemini MCP Streamable HTTP Endpoint:</p>
+        <p style="color: #94a3b8; margin-bottom: 4px;">1. Copy this MCP URL into <b>Claude (Settings &rarr; Integrations)</b>:</p>
         <div class="endpoint-card">
             <span id="mcp-url">Loading...</span>
+            <button onclick="copyMcpUrl()" id="btn-copy" style="padding: 6px 12px; font-size: 12px;">Copy URL</button>
         </div>
 
         <div class="section">
-            <h2>🧪 Test 1: Overleaf Login Status</h2>
-            <p style="color: #cbd5e1; font-size: 14px;">Verify that the browser profile or OVERLEAF_STORAGE_STATE_B64 is authenticated into Overleaf.</p>
-            <button id="btn-auth" onclick="testAuth()">Check Overleaf Login Status</button>
-            <pre id="auth-output" style="display:none;"></pre>
+            <h2>⚡ 2. Connect Your Overleaf Project (No Terminal Needed)</h2>
+            <label>Overleaf Project / Share Link URL:</label>
+            <input type="text" id="cfg-share-url" value="https://www.overleaf.com/project/6ab69fcdfed103759283b936/share#1145d72d9449b66e08f0f68750a29a9d05489b403ed59b83" />
+
+            <label>Overleaf Session Cookie (Optional — only if Overleaf asks for login):</label>
+            <input type="password" id="cfg-cookie" placeholder="Paste 'overleaf_session2' value from Browser DevTools -> Application -> Cookies" />
+
+            <button id="btn-save" onclick="saveConfig()">Save &amp; Test Connection</button>
+            <pre id="save-output" style="display:none;"></pre>
         </div>
 
         <div class="section">
-            <h2>🧪 Test 2: Live Project Read Test</h2>
-            <p style="color: #cbd5e1; font-size: 14px;">Enter an Overleaf project URL or share URL to test opening it and reading the LaTeX source code.</p>
-            <input type="text" id="project-url" placeholder="https://www.overleaf.com/project/6ab69fcdfed103759283b936/share#..." />
-            <button id="btn-project" onclick="testProject()">Open & Read LaTeX</button>
+            <h2>🧪 3. Live LaTeX Read Test</h2>
+            <p style="color: #cbd5e1; font-size: 14px; margin-top: 0;">Verify that the server can open your Overleaf project and read the LaTeX source.</p>
+            <button id="btn-project" onclick="testProject()">Open Project &amp; Read LaTeX</button>
             <pre id="project-output" style="display:none;"></pre>
         </div>
     </div>
 
     <script>
-        document.getElementById('mcp-url').innerText = window.location.origin + '/mcp';
+        const mcpUrl = window.location.origin + '/mcp';
+        document.getElementById('mcp-url').innerText = mcpUrl;
 
-        async function testAuth() {
-            const btn = document.getElementById('btn-auth');
-            const out = document.getElementById('auth-output');
+        function copyMcpUrl() {
+            navigator.clipboard.writeText(mcpUrl);
+            const b = document.getElementById('btn-copy');
+            b.innerText = 'Copied!';
+            setTimeout(() => b.innerText = 'Copy URL', 2000);
+        }
+
+        async function saveConfig() {
+            const btn = document.getElementById('btn-save');
+            const out = document.getElementById('save-output');
+            const shareUrl = document.getElementById('cfg-share-url').value.trim();
+            const cookie = document.getElementById('cfg-cookie').value.trim();
             btn.disabled = true;
-            btn.innerText = 'Checking...';
+            btn.innerText = 'Saving & Connecting...';
             out.style.display = 'block';
-            out.innerText = 'Checking Overleaf session in browser...';
+            out.innerText = 'Updating session and checking Overleaf access...';
             try {
-                const res = await fetch('/api/test-auth');
+                const res = await fetch('/api/configure', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ share_url: shareUrl, session_cookie: cookie })
+                });
                 const data = await res.json();
                 out.innerText = JSON.stringify(data, null, 2);
             } catch(e) {
                 out.innerText = 'Error: ' + e.message;
             }
             btn.disabled = false;
-            btn.innerText = 'Check Overleaf Login Status';
+            btn.innerText = 'Save & Test Connection';
         }
 
         async function testProject() {
-            const input = document.getElementById('project-url').value.trim();
+            const input = document.getElementById('cfg-share-url').value.trim();
             const btn = document.getElementById('btn-project');
             const out = document.getElementById('project-output');
-            if (!input) {
-                alert('Please enter an Overleaf project URL first.');
-                return;
-            }
             btn.disabled = true;
             btn.innerText = 'Opening project...';
             out.style.display = 'block';
@@ -173,7 +189,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 out.innerText = 'Error: ' + e.message;
             }
             btn.disabled = false;
-            btn.innerText = 'Open & Read LaTeX';
+            btn.innerText = 'Open Project & Read LaTeX';
         }
     </script>
 </body>
@@ -243,11 +259,27 @@ async def health_check_route(_request: Request) -> JSONResponse:
     )
 
 
+async def api_configure(request: Request) -> JSONResponse:
+    try:
+        data = await request.json()
+        bclient = get_client().browser_client
+        cfg_res = await bclient.configure_session(
+            share_url=data.get("share_url"),
+            session_cookie=data.get("session_cookie"),
+            storage_state_b64=data.get("storage_state_b64"),
+        )
+        auth_res = await bclient.check_auth_status()
+        return JSONResponse({"configured": cfg_res, "auth_status": auth_res})
+    except Exception as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=200)
+
+
 # Register custom routes directly on MCPServer if supported (mcp >= 2.0)
 if hasattr(mcp, "custom_route"):
     mcp.custom_route("/", methods=["GET"])(root_dashboard)
     mcp.custom_route("/health", methods=["GET"])(health_check_route)
     mcp.custom_route("/download/{filename}", methods=["GET"])(download_file_endpoint)
+    mcp.custom_route("/api/configure", methods=["POST"])(api_configure)
     mcp.custom_route("/api/test-auth", methods=["GET"])(api_test_auth)
     mcp.custom_route("/api/test-project", methods=["POST"])(api_test_project)
 
@@ -255,6 +287,23 @@ if hasattr(mcp, "custom_route"):
 # ---------------------------------------------------------------------------
 # Browser-Native Overleaf Tools (Works on Free Tier & Cloud Deployments)
 # ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def overleaf_configure_session(
+    share_url: Optional[str] = None,
+    session_cookie: Optional[str] = None,
+) -> str:
+    """Configure your Overleaf Share URL or Overleaf session cookie directly from Claude chat (no terminal or env vars required).
+
+    Args:
+        share_url: Overleaf project URL or link-sharing edit URL (e.g. 'https://www.overleaf.com/project/.../share#...').
+        session_cookie: Optional 'overleaf_session2' cookie value if Overleaf requires authentication.
+    """
+    bclient = get_client().browser_client
+    cfg = await bclient.configure_session(share_url=share_url, session_cookie=session_cookie)
+    status = await bclient.check_auth_status()
+    return _format_json({"configuration": cfg, "auth_status": status})
 
 
 @mcp.tool()
@@ -815,7 +864,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         self.api_key = api_key
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
-        if request.url.path in ("/", "/health", "/api/test-auth", "/api/test-project") or request.url.path.startswith("/download/") or request.method == "OPTIONS":
+        if request.url.path in ("/", "/health", "/api/configure", "/api/test-auth", "/api/test-project") or request.url.path.startswith("/download/") or request.method == "OPTIONS":
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
@@ -873,6 +922,7 @@ def create_http_app(transport: str = "streamable-http", api_key: Optional[str] =
         Route("/", endpoint=root_dashboard, methods=["GET"]),
         Route("/health", endpoint=health_endpoint, methods=["GET"]),
         Route("/download/{filename}", endpoint=download_file_endpoint, methods=["GET"]),
+        Route("/api/configure", endpoint=api_configure, methods=["POST"]),
         Route("/api/test-auth", endpoint=api_test_auth, methods=["GET"]),
         Route("/api/test-project", endpoint=api_test_project, methods=["POST"]),
         Mount("/", app=mcp_app),

@@ -66,10 +66,19 @@ class OverleafBrowserClient:
         headless: Optional[bool] = None,
     ) -> None:
         self.cdp_url = (cdp_url or os.getenv("CHROME_CDP_URL", "")).strip()
-        self.share_url = (share_url or os.getenv("OVERLEAF_SHARE_URL", "")).strip()
+        self.share_url = (
+            share_url
+            or os.getenv(
+                "OVERLEAF_SHARE_URL",
+                "https://www.overleaf.com/project/6ab69fcdfed103759283b936/share#1145d72d9449b66e08f0f68750a29a9d05489b403ed59b83",
+            )
+        ).strip()
+        self.session_cookie = os.getenv("OVERLEAF_SESSION_COOKIE", "").strip()
         self.user_data_dir = user_data_dir or OVERLEAF_PROFILE_DIR
         self.output_dir = OVERLEAF_OUTPUT_DIR
         self.headless = headless if headless is not None else HEADLESS
+        self._runtime_config_file = BASE_DIR / "runtime_session.json"
+        self._load_runtime_config()
 
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
@@ -78,6 +87,60 @@ class OverleafBrowserClient:
         self._current_project_id: Optional[str] = None
         self._lock = asyncio.Lock()
         self.connection_type: str = "disconnected"
+
+    def _load_runtime_config(self) -> None:
+        """Load session settings saved from the Web Console or MCP tool."""
+        if not self._runtime_config_file.exists():
+            return
+        try:
+            data = json.loads(self._runtime_config_file.read_text(encoding="utf-8"))
+            if data.get("share_url"):
+                self.share_url = str(data["share_url"]).strip()
+            if data.get("session_cookie"):
+                self.session_cookie = str(data["session_cookie"]).strip()
+                os.environ["OVERLEAF_SESSION_COOKIE"] = self.session_cookie
+            if data.get("storage_state_b64"):
+                os.environ["OVERLEAF_STORAGE_STATE_B64"] = str(data["storage_state_b64"]).strip()
+        except Exception:
+            pass
+
+    async def configure_session(
+        self,
+        share_url: Optional[str] = None,
+        session_cookie: Optional[str] = None,
+        storage_state_b64: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update Overleaf Share URL, session cookie, or base64 storage state at runtime without restarting."""
+        if share_url is not None and share_url.strip():
+            self.share_url = share_url.strip()
+            os.environ["OVERLEAF_SHARE_URL"] = self.share_url
+        if session_cookie is not None and session_cookie.strip():
+            self.session_cookie = session_cookie.strip()
+            os.environ["OVERLEAF_SESSION_COOKIE"] = self.session_cookie
+        if storage_state_b64 is not None and storage_state_b64.strip():
+            b64 = storage_state_b64.strip()
+            os.environ["OVERLEAF_STORAGE_STATE_B64"] = b64
+            state_file_path = BASE_DIR / "storage_state.json"
+            decoded = base64.b64decode(b64).decode("utf-8")
+            state_file_path.write_text(decoded, encoding="utf-8")
+
+        self._runtime_config_file.write_text(
+            json.dumps(
+                {
+                    "share_url": self.share_url,
+                    "session_cookie": self.session_cookie,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        await self.close()
+        return {
+            "success": True,
+            "share_url": self.share_url,
+            "session_cookie_configured": bool(self.session_cookie),
+            "storage_state_configured": (BASE_DIR / "storage_state.json").exists(),
+        }
 
     @staticmethod
     def find_system_chrome() -> Optional[str]:
@@ -182,7 +245,7 @@ class OverleafBrowserClient:
                 launch_kwargs["executable_path"] = chrome_bin
 
         # 1. Check OVERLEAF_SESSION_COOKIE (Zero-install cloud deployment)
-        session_cookie = os.getenv("OVERLEAF_SESSION_COOKIE", "").strip()
+        session_cookie = (self.session_cookie or os.getenv("OVERLEAF_SESSION_COOKIE", "")).strip()
         if session_cookie:
             browser_instance = await self._playwright.chromium.launch(**launch_kwargs)
             self._context = await browser_instance.new_context(
@@ -403,13 +466,28 @@ class OverleafBrowserClient:
                 target_url = f"https://www.overleaf.com/project/{proj_id}"
 
             await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(1.5)
+
+            # If opening a /share#... link shows a "Join Project" / "OK, join project" button, click it automatically
+            try:
+                join_btn = page.locator(
+                    "button:has-text('Join Project'), button:has-text('OK, join project'), a:has-text('Join Project')"
+                ).first
+                if await join_btn.is_visible(timeout=2000):
+                    await join_btn.click()
+                    await asyncio.sleep(2.0)
+            except Exception:
+                pass
 
             if "/login" in page.url:
                 return {
                     "success": False,
                     "logged_in_and_open": False,
                     "current_url": page.url,
-                    "error": "Redirected to login. Run `python3 setup_auth.py` once to authenticate.",
+                    "error": (
+                        "Overleaf asked for login. Paste your 'overleaf_session2' cookie in the Web Console "
+                        "or call `overleaf_configure_session(session_cookie=...)` right in chat!"
+                    ),
                 }
 
             try:
