@@ -66,23 +66,10 @@ def main() -> None:
             mcp.run("stdio")
             return
 
-        from mcp.server.transport_security import TransportSecuritySettings
-
-        security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-        if args.transport == "sse":
-            mcp.run("sse", host=args.host, port=args.port, transport_security=security_settings)
-        else:
-            mcp.run(
-                "streamable-http",
-                host=args.host,
-                port=args.port,
-                transport_security=security_settings,
-            )
-    except (ImportError, TypeError):
         import uvicorn
 
         app = create_http_app(transport=args.transport)
-        uvicorn.run(app, host=args.host, port=args.port)
+        uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips="*")
     except KeyboardInterrupt:
         print("\nShutting down Overleaf MCP Server...")
         sys.exit(0)

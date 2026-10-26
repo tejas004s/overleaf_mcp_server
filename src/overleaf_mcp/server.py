@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
+import time
 import traceback
-from typing import Any, Optional
+from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 try:
     from mcp.server.mcpserver import MCPServer as FastMCP
@@ -18,7 +21,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from .browser_client import OVERLEAF_OUTPUT_DIR, PUBLIC_URL, SERVER_HOST, SERVER_PORT, TRANSPORT
@@ -35,14 +38,33 @@ from .latex_parser import (
     upsert_bib_entry,
 )
 
-mcp = FastMCP(
-    "overleaf-latex-mcp",
-    instructions=(
-        "Connects Claude, ChatGPT, and Gemini to Overleaf (via Free-Tier Playwright Browser Automation "
-        "or Overleaf Git Bridge) to tailor LaTeX resumes/papers, edit sections, manage BibTeX citations, "
-        "recompile, and return clickable PDF download links."
-    ),
-)
+def _create_mcp_instance() -> FastMCP:
+    """Create the MCPServer / FastMCP instance with DNS rebinding protection disabled for cloud hosts."""
+    kwargs: Dict[str, Any] = {
+        "instructions": (
+            "Connects Claude, ChatGPT, and Gemini to Overleaf (via Free-Tier Playwright Browser Automation "
+            "or Overleaf Git Bridge) to tailor LaTeX resumes/papers, edit sections, manage BibTeX citations, "
+            "recompile, and return clickable PDF download links."
+        ),
+    }
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        sig = inspect.signature(FastMCP.__init__)
+        if "transport_security" in sig.parameters:
+            kwargs["transport_security"] = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            )
+        if "host" in sig.parameters:
+            kwargs["host"] = "0.0.0.0"
+        if "stateless_http" in sig.parameters:
+            kwargs["stateless_http"] = True
+    except Exception:
+        pass
+    return FastMCP("overleaf-latex-mcp", **kwargs)
+
+
+mcp = _create_mcp_instance()
 
 _client: Optional[OverleafGitClient] = None
 
@@ -65,11 +87,27 @@ def _format_json(data: Any) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
+def _get_external_base_url(request: Optional[Request] = None) -> str:
+    """Determine the external HTTPS base URL when running behind Render / Railway / Cloudflare proxies."""
+    if PUBLIC_URL and not PUBLIC_URL.startswith("http://127.0.0.1"):
+        return PUBLIC_URL.rstrip("/")
+    if request is not None:
+        host = (
+            request.headers.get("x-forwarded-host")
+            or request.headers.get("host")
+            or request.url.netloc
+        )
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+        if host and not host.startswith(("127.0.0.1", "localhost")):
+            proto = "https"
+        if host:
+            return f"{proto}://{host}".rstrip("/")
+    return (PUBLIC_URL or f"http://127.0.0.1:{SERVER_PORT}").rstrip("/")
+
+
 def _build_download_url(request: Optional[Request], filename: str) -> str:
-    """Build the full absolute download URL, preferring PUBLIC_URL / RAILWAY_PUBLIC_DOMAIN."""
-    if PUBLIC_URL:
-        return f"{PUBLIC_URL}/download/{filename}"
-    base = str(request.base_url).rstrip("/") if request else ""
+    """Build the full absolute download URL, preferring PUBLIC_URL / RENDER_EXTERNAL_URL."""
+    base = _get_external_base_url(request)
     return f"{base}/download/{filename}" if base else f"/download/{filename}"
 
 
@@ -274,6 +312,95 @@ async def api_configure(request: Request) -> JSONResponse:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=200)
 
 
+async def oauth_protected_resource(request: Request) -> JSONResponse:
+    """RFC 9728 OAuth 2.0 Protected Resource Metadata for Claude / MCP connectors."""
+    base_url = _get_external_base_url(request)
+    return JSONResponse(
+        {
+            "resource": f"{base_url}/mcp",
+            "authorization_servers": [base_url],
+            "bearer_methods_supported": ["header"],
+            "resource_documentation": base_url,
+        }
+    )
+
+
+async def oauth_authorization_server(request: Request) -> JSONResponse:
+    """RFC 8414 OAuth 2.0 Authorization Server Metadata supporting Dynamic Client Registration."""
+    base_url = _get_external_base_url(request)
+    return JSONResponse(
+        {
+            "issuer": base_url,
+            "authorization_endpoint": f"{base_url}/authorize",
+            "token_endpoint": f"{base_url}/token",
+            "registration_endpoint": f"{base_url}/register",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
+            "token_endpoint_auth_methods_supported": [
+                "none",
+                "client_secret_post",
+                "client_secret_basic",
+            ],
+            "code_challenge_methods_supported": ["S256", "plain"],
+            "scopes_supported": ["mcp", "claudeai"],
+        }
+    )
+
+
+async def oauth_register(request: Request) -> JSONResponse:
+    """RFC 7591 OAuth 2.0 Dynamic Client Registration endpoint for Claude.ai sign-in service."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    now = int(time.time())
+    client_id = body.get("client_id") or f"overleaf_mcp_client_{now}"
+    return JSONResponse(
+        {
+            "client_id": client_id,
+            "client_secret": "overleaf_mcp_secret",
+            "client_id_issued_at": now,
+            "client_secret_expires_at": 0,
+            "redirect_uris": body.get("redirect_uris", []),
+            "grant_types": body.get(
+                "grant_types", ["authorization_code", "refresh_token", "client_credentials"]
+            ),
+            "response_types": body.get("response_types", ["code"]),
+            "client_name": body.get("client_name", "Claude MCP Connector"),
+            "token_endpoint_auth_method": body.get("token_endpoint_auth_method", "none"),
+        },
+        status_code=201,
+    )
+
+
+async def oauth_authorize(request: Request) -> Any:
+    """Auto-approving OAuth 2.1 authorization endpoint redirecting back to Claude's callback URL."""
+    params = dict(request.query_params)
+    redirect_uri = params.get("redirect_uri", "")
+    state = params.get("state", "")
+    if not redirect_uri:
+        return JSONResponse({"status": "authorized", "code": "overleaf_mcp_auth_code"})
+
+    query = {"code": "overleaf_mcp_auth_code"}
+    if state:
+        query["state"] = state
+    sep = "&" if "?" in redirect_uri else "?"
+    return RedirectResponse(url=f"{redirect_uri}{sep}{urlencode(query)}", status_code=302)
+
+
+async def oauth_token(_request: Request) -> JSONResponse:
+    """OAuth 2.1 token endpoint returning a valid Bearer token for Claude."""
+    return JSONResponse(
+        {
+            "access_token": "overleaf_mcp_access_token",
+            "token_type": "Bearer",
+            "expires_in": 31536000,
+            "refresh_token": "overleaf_mcp_refresh_token",
+            "scope": "mcp",
+        }
+    )
+
+
 # Register custom routes directly on MCPServer if supported (mcp >= 2.0)
 if hasattr(mcp, "custom_route"):
     mcp.custom_route("/", methods=["GET"])(root_dashboard)
@@ -282,6 +409,21 @@ if hasattr(mcp, "custom_route"):
     mcp.custom_route("/api/configure", methods=["POST"])(api_configure)
     mcp.custom_route("/api/test-auth", methods=["GET"])(api_test_auth)
     mcp.custom_route("/api/test-project", methods=["POST"])(api_test_project)
+    mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])(
+        oauth_protected_resource
+    )
+    mcp.custom_route("/.well-known/oauth-protected-resource/mcp", methods=["GET"])(
+        oauth_protected_resource
+    )
+    mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])(
+        oauth_authorization_server
+    )
+    mcp.custom_route("/.well-known/openid-configuration", methods=["GET"])(
+        oauth_authorization_server
+    )
+    mcp.custom_route("/register", methods=["POST"])(oauth_register)
+    mcp.custom_route("/authorize", methods=["GET", "POST"])(oauth_authorize)
+    mcp.custom_route("/token", methods=["POST"])(oauth_token)
 
 
 # ---------------------------------------------------------------------------
@@ -864,7 +1006,21 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         self.api_key = api_key
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
-        if request.url.path in ("/", "/health", "/api/configure", "/api/test-auth", "/api/test-project") or request.url.path.startswith("/download/") or request.method == "OPTIONS":
+        if (
+            request.url.path
+            in (
+                "/",
+                "/health",
+                "/api/configure",
+                "/api/test-auth",
+                "/api/test-project",
+                "/register",
+                "/authorize",
+                "/token",
+            )
+            or request.url.path.startswith(("/download/", "/.well-known/"))
+            or request.method == "OPTIONS"
+        ):
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
@@ -925,6 +1081,29 @@ def create_http_app(transport: str = "streamable-http", api_key: Optional[str] =
         Route("/api/configure", endpoint=api_configure, methods=["POST"]),
         Route("/api/test-auth", endpoint=api_test_auth, methods=["GET"]),
         Route("/api/test-project", endpoint=api_test_project, methods=["POST"]),
+        Route(
+            "/.well-known/oauth-protected-resource",
+            endpoint=oauth_protected_resource,
+            methods=["GET"],
+        ),
+        Route(
+            "/.well-known/oauth-protected-resource/mcp",
+            endpoint=oauth_protected_resource,
+            methods=["GET"],
+        ),
+        Route(
+            "/.well-known/oauth-authorization-server",
+            endpoint=oauth_authorization_server,
+            methods=["GET"],
+        ),
+        Route(
+            "/.well-known/openid-configuration",
+            endpoint=oauth_authorization_server,
+            methods=["GET"],
+        ),
+        Route("/register", endpoint=oauth_register, methods=["POST"]),
+        Route("/authorize", endpoint=oauth_authorize, methods=["GET", "POST"]),
+        Route("/token", endpoint=oauth_token, methods=["POST"]),
         Mount("/", app=mcp_app),
     ]
 
@@ -966,24 +1145,10 @@ def main() -> None:
     if args.transport == "stdio":
         mcp.run("stdio")
     else:
-        try:
-            from mcp.server.transport_security import TransportSecuritySettings
+        import uvicorn
 
-            security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-            if args.transport == "sse":
-                mcp.run("sse", host=args.host, port=args.port, transport_security=security_settings)
-            else:
-                mcp.run(
-                    "streamable-http",
-                    host=args.host,
-                    port=args.port,
-                    transport_security=security_settings,
-                )
-        except (ImportError, TypeError):
-            import uvicorn
-
-            app = create_http_app(transport=args.transport)
-            uvicorn.run(app, host=args.host, port=args.port)
+        app = create_http_app(transport=args.transport)
+        uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips="*")
 
 
 if __name__ == "__main__":
