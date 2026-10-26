@@ -16,6 +16,17 @@ try:
 except ImportError:
     from mcp.server.fastmcp import FastMCP
 
+try:
+    from mcp.server.transport_security import (
+        TransportSecurityMiddleware,
+        TransportSecuritySettings,
+    )
+
+    TransportSecurityMiddleware._validate_host = lambda self, host: True  # type: ignore[method-assign]
+    TransportSecurityMiddleware._validate_origin = lambda self, origin: True  # type: ignore[method-assign]
+except ImportError:
+    TransportSecuritySettings = None  # type: ignore[assignment,misc]
+
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -1045,10 +1056,25 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 def create_http_app(transport: str = "streamable-http", api_key: Optional[str] = None) -> Starlette:
     """Create a Starlette ASGI application wrapping the MCPServer with test console, /download, and /health."""
+    security_cfg = (
+        TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        if TransportSecuritySettings is not None
+        else None
+    )
     if transport == "sse":
-        mcp_app = mcp.sse_app()
+        try:
+            mcp_app = mcp.sse_app(transport_security=security_cfg, host="0.0.0.0")
+        except TypeError:
+            mcp_app = mcp.sse_app()
     else:
-        mcp_app = mcp.streamable_http_app()
+        try:
+            mcp_app = mcp.streamable_http_app(
+                stateless_http=True,
+                transport_security=security_cfg,
+                host="0.0.0.0",
+            )
+        except TypeError:
+            mcp_app = mcp.streamable_http_app()
 
     async def health_endpoint(_request: Request) -> JSONResponse:
         client = get_client()
