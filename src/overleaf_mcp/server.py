@@ -232,9 +232,21 @@ async def api_test_project(request: Request) -> JSONResponse:
         )
 
 
+async def health_check_route(_request: Request) -> JSONResponse:
+    client = get_client()
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "overleaf-mcp-server",
+            "default_project_id": client.config.default_project_id or None,
+        }
+    )
+
+
 # Register custom routes directly on MCPServer if supported (mcp >= 2.0)
 if hasattr(mcp, "custom_route"):
     mcp.custom_route("/", methods=["GET"])(root_dashboard)
+    mcp.custom_route("/health", methods=["GET"])(health_check_route)
     mcp.custom_route("/download/{filename}", methods=["GET"])(download_file_endpoint)
     mcp.custom_route("/api/test-auth", methods=["GET"])(api_test_auth)
     mcp.custom_route("/api/test-project", methods=["POST"])(api_test_project)
@@ -262,6 +274,68 @@ async def overleaf_open_project(project_url_or_id: str) -> str:
     """
     res = await get_client().browser_client.open_project(project_url_or_id)
     return _format_json(res)
+
+
+@mcp.tool()
+async def overleaf_create_blank_project(project_name: str = "Tailored_Resume") -> str:
+    """Create a brand-new Blank Project on Overleaf and open it in the editor.
+
+    Args:
+        project_name: Name for the new Overleaf project (default 'Tailored_Resume').
+    """
+    res = await get_client().browser_client.create_blank_project(project_name=project_name)
+    return _format_json(res)
+
+
+@mcp.tool()
+def get_resume_latex_template() -> str:
+    """Return a complete, self-contained 1-page ATS-friendly LaTeX resume template (single main.tex, no external .cls required) ready to customize and pass to overleaf_set_latex."""
+    return r"""\documentclass[10pt,letterpaper]{article}
+\usepackage[left=0.5in,top=0.45in,right=0.5in,bottom=0.45in]{geometry}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{titlesec}
+\pagenumbering{gobble}
+
+\titleformat{\section}{\large\bfseries\uppercase}{}{0em}{}[\titlerule]
+\titlespacing{\section}{0pt}{8pt}{4pt}
+\setlist[itemize]{noitemsep, topsep=2pt, leftmargin=1.5em}
+
+\begin{document}
+
+\begin{center}
+    {\LARGE \textbf{YOUR FULL NAME}} \\[3pt]
+    City, Country $\cdot$ \href{mailto:you@example.com}{you@example.com} $\cdot$ +1-555-010-9999 $\cdot$ \href{https://linkedin.com/in/yourprofile}{linkedin.com/in/yourprofile} $\cdot$ \href{https://github.com/yourgithub}{github.com/yourgithub}
+\end{center}
+
+\section{Education}
+\textbf{University Name} \hfill \textbf{City, Country} \\
+\textit{B.Tech / M.S. in Computer Science \& Engineering (GPA: X.XX/10.0)} \hfill \textit{Aug 2022 -- May 2026}
+
+\section{Technical Skills}
+\begin{itemize}
+    \item \textbf{Languages:} Python, TypeScript, C++, SQL, Bash
+    \item \textbf{Frameworks \& Libraries:} PyTorch, FastAPI, React, Node.js, LangChain, Model Context Protocol (MCP)
+    \item \textbf{Cloud \& DevOps:} Docker, AWS, Git, Linux, PostgreSQL, Redis, CI/CD
+\end{itemize}
+
+\section{Experience}
+\textbf{Company Name} $|$ \textit{Software / Machine Learning Engineer Intern} \hfill \textit{May 2025 -- Aug 2025}
+\begin{itemize}
+    \item Designed and deployed production microservices in Python/FastAPI handling 50K+ daily requests with 99.9\% uptime.
+    \item Automated document and workflow pipelines using LLM agents and Playwright browser automation, reducing manual processing time by 65\%.
+    \item Optimized SQL queries and Redis caching layers, cutting p95 API latency from 420ms to 110ms.
+\end{itemize}
+
+\section{Projects}
+\textbf{Overleaf \& LinkedIn MCP Servers} $|$ \textit{Python, FastMCP, Playwright, Docker} \hfill \textit{2026}
+\begin{itemize}
+    \item Built cloud-deployed Model Context Protocol (MCP) servers enabling Claude, ChatGPT, and Gemini to automate Overleaf LaTeX authoring and LinkedIn Easy Apply workflows.
+    \item Engineered direct CodeMirror 6 state injection and real-time PDF compilation/download pipelines.
+\end{itemize}
+
+\end{document}
+"""
 
 
 @mcp.tool()

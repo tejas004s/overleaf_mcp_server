@@ -38,9 +38,12 @@ SERVER_PORT = int(os.getenv("PORT", os.getenv("MCP_PORT", "8000")))
 TRANSPORT = os.getenv("MCP_TRANSPORT", "streamable-http")
 
 _railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+_render_url = os.getenv("RENDER_EXTERNAL_URL", "")
 _explicit_url = os.getenv("PUBLIC_URL", "")
 if _explicit_url:
     PUBLIC_URL = _explicit_url.rstrip("/")
+elif _render_url:
+    PUBLIC_URL = _render_url.rstrip("/")
 elif _railway_domain:
     PUBLIC_URL = f"https://{_railway_domain}"
 elif not IS_CLOUD:
@@ -313,6 +316,67 @@ class OverleafBrowserClient:
                     "authenticated": False,
                     "error": str(exc),
                     "message": f"Browser navigation error: {exc}",
+                }
+
+    async def create_blank_project(self, project_name: str = "Tailored_Resume") -> Dict[str, Any]:
+        """Create a brand new Blank Project on the Overleaf dashboard and open it in the editor."""
+        async with self._lock:
+            page = await self._ensure_browser()
+            await page.goto("https://www.overleaf.com/project", wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(2)
+
+            if "/login" in page.url:
+                return {
+                    "success": False,
+                    "error": "Not logged into Overleaf. Please run `python3 setup_auth.py` and log in first.",
+                }
+
+            try:
+                # 1. Click "New Project" button on the Overleaf dashboard
+                new_proj_btn = page.locator(
+                    "button:has-text('New Project'), a:has-text('New Project'), [data-testid*='new-project']"
+                ).first
+                await new_proj_btn.click(timeout=10000)
+                await asyncio.sleep(0.8)
+
+                # 2. Click "Blank Project" in the dropdown menu
+                blank_btn = page.locator(
+                    "a:has-text('Blank Project'), button:has-text('Blank Project'), [ role='menuitem']:has-text('Blank Project')"
+                ).first
+                await blank_btn.click(timeout=10000)
+                await asyncio.sleep(0.8)
+
+                # 3. Fill the project name input in the modal and click "Create"
+                name_input = page.locator(
+                    "input#project-name, input[name='projectName'], div[role='dialog'] input[type='text']"
+                ).first
+                await name_input.fill(project_name)
+                await asyncio.sleep(0.3)
+
+                create_btn = page.locator(
+                    "div[role='dialog'] button:has-text('Create'), button.btn-primary:has-text('Create')"
+                ).first
+                await create_btn.click(timeout=10000)
+
+                # 4. Wait for redirect to /project/<id> and editor load
+                await page.wait_for_selector(".cm-content, .cm-editor, .ace_editor", timeout=25000)
+                await asyncio.sleep(1.5)
+
+                current_match = re.search(r"/project/([0-9a-f]{24}|[0-9a-zA-Z_-]+)", page.url)
+                if current_match:
+                    self._current_project_id = current_match.group(1)
+
+                return {
+                    "success": True,
+                    "project_name": project_name,
+                    "project_id": self._current_project_id,
+                    "url": page.url,
+                    "message": f"Created and opened new Overleaf project '{project_name}'.",
+                }
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "error": f"Could not auto-create project from dashboard: {exc}. You can also open your existing project or share URL with overleaf_open_project.",
                 }
 
     async def open_project(self, project_url_or_id: Optional[str] = None) -> Dict[str, Any]:

@@ -5,13 +5,13 @@ services:
     plan: starter
     healthCheckPath: /health
     envVars:
-      - key: OVERLEAF_GIT_TOKEN
-        sync: false
-      - key: OVERLEAF_PROJECT_ID
-        sync: false
       - key: MCP_TRANSPORT
         value: streamable-http
-      - key: MCP_PORT
-        value: "8000"
-      - key: MCP_API_KEY
-        generateValue: true
+      - key: OVERLEAF_HEADLESS
+        value: "true"
+      - key: OVERLEAF_STORAGE_STATE_B64
+        sync: false
+      - key: OVERLEAF_SHARE_URL
+        sync: false
+      - key: OVERLEAF_SESSION_COOKIE
+        sync: false
