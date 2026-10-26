@@ -22,7 +22,10 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PROFILE_DIR = BASE_DIR / "browser_data"

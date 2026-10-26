@@ -7,6 +7,10 @@ Defaults to `streamable-http` when invoked via `python3 main.py` (or uses `MCP_T
 import argparse
 import os
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from mcp.server.transport_security import TransportSecurityMiddleware
 TransportSecurityMiddleware._validate_host = lambda self, host: True
 TransportSecurityMiddleware._validate_origin = lambda self, origin: True

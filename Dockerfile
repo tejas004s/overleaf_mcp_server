@@ -14,7 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
     MCP_HOST=0.0.0.0 \
     MCP_TRANSPORT=streamable-http
 
-COPY pyproject.toml requirements.txt README.md ./
+COPY pyproject.toml requirements.txt README.md .env* ./
 COPY src/ ./src/
 COPY main.py setup_auth.py export_session.py run_server.sh ./
 

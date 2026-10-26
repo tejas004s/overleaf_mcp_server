@@ -6,7 +6,6 @@ dist/
 build/
 .venv/
 venv/
-.env
 .overleaf_workspace/
 .pytest_cache/
 browser_data/
