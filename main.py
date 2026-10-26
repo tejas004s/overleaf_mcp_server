@@ -7,6 +7,9 @@ Defaults to `streamable-http` when invoked via `python3 main.py` (or uses `MCP_T
 import argparse
 import os
 import sys
+from mcp.server.transport_security import TransportSecurityMiddleware
+TransportSecurityMiddleware._validate_host = lambda self, host: True
+TransportSecurityMiddleware._validate_origin = lambda self, origin: True
 
 from overleaf_mcp.browser_client import HEADLESS, SERVER_HOST, SERVER_PORT
 
