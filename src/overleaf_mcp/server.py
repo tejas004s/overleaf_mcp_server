@@ -155,7 +155,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="section">
             <h2>⚡ 2. Connect Your Overleaf Project (No Terminal Needed)</h2>
             <label>Overleaf Project / Share Link URL:</label>
-            <input type="text" id="cfg-share-url" value="https://www.overleaf.com/project/6ab69fcdfed103759283b936/share#1145d72d9449b66e08f0f68750a29a9d05489b403ed59b83" />
+            <input type="text" id="cfg-share-url" placeholder="https://www.overleaf.com/project/<YOUR_PROJECT_ID>/share#..." />
 
             <label>Overleaf Session Cookie (Optional — only if Overleaf asks for login):</label>
             <input type="password" id="cfg-cookie" placeholder="Paste 'overleaf_session2' value from Browser DevTools -> Application -> Cookies" />

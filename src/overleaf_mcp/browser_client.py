@@ -66,13 +66,7 @@ class OverleafBrowserClient:
         headless: Optional[bool] = None,
     ) -> None:
         self.cdp_url = (cdp_url or os.getenv("CHROME_CDP_URL", "")).strip()
-        self.share_url = (
-            share_url
-            or os.getenv(
-                "OVERLEAF_SHARE_URL",
-                "https://www.overleaf.com/project/6ab69fcdfed103759283b936/share#1145d72d9449b66e08f0f68750a29a9d05489b403ed59b83",
-            )
-        ).strip()
+        self.share_url = (share_url or os.getenv("OVERLEAF_SHARE_URL", "")).strip()
         self.session_cookie = os.getenv("OVERLEAF_SESSION_COOKIE", "").strip()
         self.user_data_dir = user_data_dir or OVERLEAF_PROFILE_DIR
         self.output_dir = OVERLEAF_OUTPUT_DIR

@@ -10,4 +10,4 @@ services:
       - key: OVERLEAF_HEADLESS
         value: "true"
       - key: OVERLEAF_SHARE_URL
-        value: "https://www.overleaf.com/project/6ab69fcdfed103759283b936/share#1145d72d9449b66e08f0f68750a29a9d05489b403ed59b83"
+        sync: false
