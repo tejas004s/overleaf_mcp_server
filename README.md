@@ -5,6 +5,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/tejas004s/overleaf_mcp_server)](https://m8ven.ai/mcp/tejas004s/overleaf_mcp_server?s=readme)[![M8ven Score](https://m8ven.ai/badge/mcp/tejas004s/overleaf_mcp_server)](https://m8ven.ai/mcp/tejas004s/overleaf_mcp_server?s=readme)[![M8ven Score](https://m8ven.ai/badge/mcp/tejas004s/overleaf_mcp_server)](https://m8ven.ai/mcp/tejas004s/overleaf_mcp_server?s=readme)
+
 Connect **Claude** (`claude.ai` Web & Claude Desktop), **ChatGPT**, or **Gemini** directly to your **Overleaf** account—**even on the Overleaf Free Tier** (no paid Overleaf API/Git subscription or terminal setup required).
 
 Give Claude your details or a Job Description (JD), and it will:
