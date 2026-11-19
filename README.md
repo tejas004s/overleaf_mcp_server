@@ -1,5 +1,7 @@
 # Overleaf MCP Server for Claude, ChatGPT & Gemini
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/tejas004s/overleaf_mcp_server)](https://m8ven.ai/mcp/tejas004s/overleaf_mcp_server?s=readme)
+
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/tejas004s/overleaf_mcp_server)
 [![MCP](https://img.shields.io/badge/Model_Context_Protocol-MCP-blue)](https://modelcontextprotocol.io)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
